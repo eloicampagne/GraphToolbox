@@ -1,0 +1,23 @@
+__pycache__
+*.pyc
+init.sh
+checkpoints
+checkpoints_optim
+*.zip
+
+# Distribution / packaging
+bin/
+build/
+develop-eggs/
+dist/
+eggs/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info
+.installed.cfg
+*.egg
+
+# Logs
+logs/

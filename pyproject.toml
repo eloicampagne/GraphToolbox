@@ -1,0 +1,67 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "GraphToolbox"
+version = "0.1.0"
+description = "A Python toolbox for graph processing and analysis with Graph Neural Network utilities."
+readme = "README.md"
+authors = [
+    { name = "Eloi Campagne", email = "eloi.campagne@gmail.com" }
+]
+license = { text = "GPL-3.0-or-later" }
+requires-python = ">=3.8"
+
+dependencies = [
+    "numpy",
+    "pandas",
+    "torch",
+    "networkx",
+    "scikit-learn",
+    "matplotlib",
+    "seaborn",
+    "colorcet",
+    "colorama",
+    "einops",
+    "fastdtw",
+    "torch-geometric",
+    "tqdm",
+    "cvxopt",
+    "basemap",
+    "optuna",
+    "optuna-dashboard",
+    "jupyter",
+    "umap-learn",
+]
+
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+    "Operating System :: OS Independent",
+]
+
+[project.scripts]
+run_training = "scripts.run_training:main"
+run_evaluation = "scripts.run_evaluation:main"
+
+[tool.setuptools.packages.find]
+where = ["lib"]
+
+[project.optional-dependencies]
+dev = ["pytest", "black", "flake8", "mypy"]
+docs = [
+    "sphinx",
+    "sphinx-rtd-theme",
+    "myst-parser",            # supporte la syntaxe Markdown
+    "sphinx-autodoc-typehints",
+    "sphinx-copybutton",
+]
+
+[tool.black]
+line-length = 88
+target-version = ["py39"]
+
+[tool.flake8]
+max-line-length = 88
+ignore = ["E203", "W503"]
