@@ -3,6 +3,7 @@ __pycache__
 init.sh
 checkpoints
 checkpoints_optim
+*.csv
 *.zip
 
 # Distribution / packaging
