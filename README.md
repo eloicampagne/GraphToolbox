@@ -101,74 +101,9 @@ pred_model_test, target_test, edge_index, attention_weights = trainer.train(
 trainer.evaluate()
 ```
 
-## Directory Structure
-
-The main files and directories in GraphToolbox are as follows:
-```
-GraphToolbox/
-├── examples/
-│   ├── graph_representations/
-│   │   ├── correlation/W.txt
-│   │   ├── distsplines/W.txt
-│   │   ├── distsplines2/W.txt
-│   │   ├── dtw/W.txt
-│   │   ├── eye/W.txt
-│   │   ├── gl3sr/W.txt
-│   │   ├── precision/W.txt
-│   │   └── space/W.txt
-│   ├── load/
-│   │   ├── checkpoints/
-│   │   ├── config.py
-│   │   ├── example.ipynb
-│   │   ├── train.csv
-│   │   └── test.csv
-│   ├── netload/
-│   │   ├── checkpoints/
-│   │   ├── config.py
-│   │   ├── example.ipynb
-│   │   ├── train.csv
-│   │   └── test.csv
-├── lib/
-│   ├── graphtoolbox/
-│   │   ├── data/
-│   │   │   ├── dataset.py
-│   │   │   └── preprocessing.py
-│   │   ├── models/
-│   │   │   └── gnn.py
-│   │   ├── optim/
-│   │   │   └── optimizer.py
-│   │   ├── scripts/
-│   │   │   ├── main.sh
-│   │   │   ├── modify_config.py
-│   │   │   ├── parallel.sh
-│   │   │   └── run_mode.py
-│   │   ├── training/
-│   │   │   ├── evaluation.py
-│   │   │   ├── metrics.py
-│   │   │   └── trainer.py
-│   │   ├── utils/
-│   │   │   ├── attention.
-│   │   │   ├── GL_3SR.py
-│   │   │   ├── helper_functions.py
-│   │   │   └── visualizations.py
-│   │   ├── config.py
-│   │   └── main.py
-├── .gitignore
-├── LICENSE
-├── README.md
-├── requirements.txt
-└── setup.py
-```
-
 ## Contributing
 
 Contributions are welcome! Please fork the repository and submit a pull request.
-
-1. Fork the project
-2. Create your feature branch: `git checkout -b feature/YourFeature`
-3. Commit your changes: `git commit -m 'feat: Add some feature'`. Please use [conventional commits](https://www.conventionalcommits.org/en/v1.0.0/)!
-4. Push to the branch: `git push origin feature/YourFeature`
-5. Create a new Pull Request
 
 Special **thanks** to all contributors of the GraphToolbox project:
 
@@ -177,4 +112,4 @@ Special **thanks** to all contributors of the GraphToolbox project:
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is licensed under the GPL License - see the LICENSE file for details.
