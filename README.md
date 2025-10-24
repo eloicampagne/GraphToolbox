@@ -1,4 +1,4 @@
-![alt text](docs/source/graphtoolbox.png)
+![alt text](docs/source/_static/logo_dark.png)
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 ![Maintainer](https://img.shields.io/badge/maintainer-E.Campagne-blue)
@@ -19,7 +19,7 @@ GraphToolbox is a Python package designed for graph machine learning focused on 
 To install GraphToolbox, clone the repository and install the dependencies:
 
 ```sh
-git clone git@gitlab.pleiade.edf.fr:energy-data-lab/corporate/Theses/eloi-campagne/graphtoolbox.git
+git clone git@github.com:eloicampagne/GraphToolbox.git
 cd GraphToolbox
 pip install .
 ```
