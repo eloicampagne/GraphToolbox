@@ -1,7 +1,0 @@
-numpydoc
-myst-parser
-sphinx-togglebutton
-sphinx-copybutton
-sphinx-book-theme
-nbsphinx
-pillow>=6.2.0
