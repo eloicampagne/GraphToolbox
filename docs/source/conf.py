@@ -69,3 +69,7 @@ def linkcode_resolve(domain, info):
         return f"https://github.com/{github_user}/{github_repo}/blob/{github_branch}/{fn}#L{lineno}-L{lineno + len(source) - 1}"
     except Exception:
         return None
+
+def setup(app):
+    # Pour un fichier local
+    app.add_css_file("styles.css")

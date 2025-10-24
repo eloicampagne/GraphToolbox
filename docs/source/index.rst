@@ -21,3 +21,10 @@ Indices and tables
 * :ref:`genindex`
 * :ref:`modindex`
 * :ref:`search`
+
+----
+
+**Useful links:**
+
+- `Back to website <https://eloicampagne.fr>`_
+- `GraphToolbox on GitHub <https://github.com/eloicampagne/GraphToolbox>`_
