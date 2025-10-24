@@ -1,17 +1,23 @@
-GraphToolbox Documentation
-==========================
+.. GraphToolbox documentation master file
 
-Bienvenue dans la documentation de **GraphToolbox**,  
-une boîte à outils Python pour la modélisation et l’analyse de graphes avec des réseaux de neurones graphiques (GNN).
+Welcome to GraphToolbox's documentation!
+========================================
 
-.. note::
-   Ce projet est publié sous licence GPLv3 et est open source.
+GraphToolbox is a Python library for building, analyzing, and learning from graph-structured data.
+It includes modules for datasets, models, training, and visualization.
+
+Contents
+--------
 
 .. toctree::
    :maxdepth: 2
-   :caption: Contenu:
+   :caption: API Reference
 
-   api/data
-   api/models
-   api/training
-   api/utils
+   modules
+
+Indices and tables
+==================
+
+* :ref:`genindex`
+* :ref:`modindex`
+* :ref:`search`

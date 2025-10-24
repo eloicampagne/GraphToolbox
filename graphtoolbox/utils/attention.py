@@ -12,24 +12,27 @@ def load_attention_batches(directory_path: str) -> tuple[torch.Tensor, torch.Ten
     """
     Load and assemble attention matrices saved in batch files from a given directory.
 
-    Each file is expected to be a `.pt` file containing:
-    - "attention_weights": list of L tensors, each of shape [E_total, H], 
-      where E_total = E_per_graph × num_graphs.
-    - "edge_idx": tensor of shape [2, E_per_graph], shared across all graphs.
+    Each file is expected to be a `.pt` file containing the following keys:
 
-    The function reconstructs a tensor of shape [L, H, total_num_graphs, E_per_graph]
+    - ``"attention_weights"``: list of L tensors, each of shape ``[E_total, H]``,
+      where ``E_total = E_per_graph × num_graphs``.
+    - ``"edge_idx"``: tensor of shape ``[2, E_per_graph]``, shared across all graphs.
+
+    The function reconstructs a tensor of shape ``[L, H, total_num_graphs, E_per_graph]``
     by reshaping and stacking the attention data across batches.
 
     Parameters
     ----------
     directory_path : str
-        Path to the directory containing batch files named as "num_batch{i}.pt".
+        Path to the directory containing batch files named as ``num_batch{i}.pt``.
 
     Returns
     -------
-    all_attentions : torch.Tensor of shape [L, H, total_num_graphs, E_per_graph]
+    all_attentions : torch.Tensor
+        Tensor of shape ``[L, H, total_num_graphs, E_per_graph]``.
         Concatenated attention weights across all batches.
-    edge_index : torch.Tensor of shape [2, E_per_graph]
+    edge_index : torch.Tensor
+        Tensor of shape ``[2, E_per_graph]``.
         Edge indices assumed to be consistent across all batches.
     """
     all_graphs = []
