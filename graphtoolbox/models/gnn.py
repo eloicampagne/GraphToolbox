@@ -155,26 +155,25 @@ class myGNN(torch.nn.Module):
                 "std": []
             }
 
-        with torch.cuda.amp.autocast():
-            for i, layer in enumerate(self.layers):
-                if return_attention:
-                    _, attn = layer.conv(x, edge_index, edge_weight, return_attention_weights=True)
-                    edge_idx_all, attn_weights_all = attn
+        for _, layer in enumerate(self.layers):
+            if return_attention:
+                _, attn = layer.conv(x, edge_index, edge_weight, return_attention_weights=True)
+                edge_idx_all, attn_weights_all = attn
 
-                    if batch_size is None:
-                        raise ValueError("`batch_size` must be provided when `return_attention=True`.")
-                    edge_idx_first = edge_idx_all[:, :num_edges_per_graph]
-                    if save:
-                        attentions['attention_weights'].append(attn_weights_all.cpu().detach())
-                    else:
-                        att_first = attn_weights_all[:num_edges_per_graph]
-                        attentions["first_graph"].append((att_first.cpu().detach(), edge_idx_first.cpu().detach()))
-                        att_reshaped = attn_weights_all.view(batch_size, num_edges_per_graph, self.heads)
-                        attentions["mean"].append(att_reshaped.mean(dim=0).cpu().detach())
-                        attentions["std"].append(att_reshaped.std(dim=0).cpu().detach())
-                        del att_reshaped, attn_weights_all
+                if batch_size is None:
+                    raise ValueError("`batch_size` must be provided when `return_attention=True`.")
+                edge_idx_first = edge_idx_all[:, :num_edges_per_graph]
+                if save:
+                    attentions['attention_weights'].append(attn_weights_all.cpu().detach())
+                else:
+                    att_first = attn_weights_all[:num_edges_per_graph]
+                    attentions["first_graph"].append((att_first.cpu().detach(), edge_idx_first.cpu().detach()))
+                    att_reshaped = attn_weights_all.view(batch_size, num_edges_per_graph, self.heads)
+                    attentions["mean"].append(att_reshaped.mean(dim=0).cpu().detach())
+                    attentions["std"].append(att_reshaped.std(dim=0).cpu().detach())
+                    del att_reshaped, attn_weights_all
 
-                x = layer(x, edge_index, edge_weight)
+            x = layer(x, edge_index, edge_weight)
 
         x = self.layers[0].act(self.norm_final(x))
         x = self.fc(x)
