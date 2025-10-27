@@ -1,11 +1,12 @@
 <p><img src="docs/source/_static/banner_toolbox.png" alt="logo" width="1000" /></p>
 
-[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-![Maintainer](https://img.shields.io/badge/maintainer-E.Campagne-blue)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0) 
+![Maintainer](https://img.shields.io/badge/maintainer-E.Campagne-blue) 
+[![Documentation](https://img.shields.io/badge/Documentation-eloicampagne.fr%2Fgraphtoolbox-green)](https://eloicampagne.fr/graphtoolbox)
 
 # GraphToolbox
 
-GraphToolbox is a Python package designed for graph machine learning focused on electricity load forecasting. It provides tools for data handling, model building, training, evaluation, and visualization.
+GraphToolbox is a Python package designed for graph machine learning focused on time-series forecasting. It provides tools for data handling, model building, training, evaluation, and visualization.
 
 ## Features
 
