@@ -8,7 +8,8 @@ from torch_geometric.loader import DataLoader as PyGDataLoader
 from tqdm import tqdm
 from typing import List, Tuple, Union
 
-DEVICE = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+# Set device to 'cuda' if available, 'mps' if on MACOS, else 'cpu'
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
 
 class EarlyStopping:
     """
@@ -113,7 +114,7 @@ class Trainer:
         self.edge_index = kwargs.get('edge_index', None)
         self.edge_weight = kwargs.get('edge_weight', None)
         self.return_attention = kwargs.get('return_attention', False)
-        self.lam_reg = kwargs.get('lam_reg', 1)
+        self.lam_reg = kwargs.get('lam_reg', 0)
         self.model = model.to(DEVICE)
         self.dataset_train = dataset_train
         self.dataset_val = dataset_val
@@ -299,10 +300,11 @@ class Trainer:
         # TODO: add dynamic graph condition
 
         for i, batch in enumerate(loader):
+            # Ensure float32 dtypes before moving to DEVICE
+            for attr in ['x', 'y_scaled', 'y', 'edge_weight', 'mask_y']:
+                if getattr(batch, attr, None) is not None:
+                    setattr(batch, attr, getattr(batch, attr).to(torch.float32))
             batch = batch.to(DEVICE)
-            batch.x = batch.x.float()
-            if hasattr(batch, 'edge_weight') and batch.edge_weight is not None:
-                batch.edge_weight = batch.edge_weight.float()
             if torch.isnan(batch.x).any() or torch.isnan(batch.y_scaled).any():
                 print(f"[WARN] NaN detected in batch {i}. Skipping batch.")
                 continue
@@ -390,8 +392,10 @@ class Trainer:
         y_preds, y_targets = [], []
         with torch.no_grad():
             for batch in loader:
+                for attr in ['x', 'y_scaled', 'y', 'edge_weight', 'mask_y']:
+                    if getattr(batch, attr, None) is not None:
+                        setattr(batch, attr, getattr(batch, attr).to(torch.float32))
                 batch = batch.to(DEVICE)
-                batch.x = batch.x.float()
                 if hasattr(batch, 'edge_weight') and batch.edge_weight is not None:
                     batch.edge_weight = batch.edge_weight.float()
                 out = self.model(batch.x, batch.edge_index, edge_weight=getattr(batch, 'edge_weight', None), mask=getattr(batch, 'mask_y', None))
@@ -457,16 +461,15 @@ class Trainer:
         Returns
         -------
         torch.Tensor
-            Rescaled predictions (num_nodes × T) in original units.
+            Rescaled predictions (num_nodes × T) in original units (float32).
         """
         preds_rescaled = []
         for node_idx, node in enumerate(self.nodes):
             scaler = self.dataset_train.scalers_target[node]
-            pred_np = np.array(preds[node_idx].cpu().detach()).reshape(-1, 1)
-            pred_rescaled = scaler.inverse_transform(pred_np)
-            preds_rescaled.append(torch.tensor(pred_rescaled).squeeze())
-        preds_rescaled = torch.stack(preds_rescaled)
-        return preds_rescaled
+            pred_np = preds[node_idx].detach().cpu().numpy().reshape(-1, 1)
+            pred_rescaled_np = scaler.inverse_transform(pred_np).reshape(-1)
+            preds_rescaled.append(torch.as_tensor(pred_rescaled_np, dtype=torch.float32))
+        return torch.stack(preds_rescaled, dim=0).to(dtype=torch.float32, device=preds.device)
             
     def _build_summing_matrix(self) -> torch.Tensor:
         """
