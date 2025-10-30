@@ -173,7 +173,10 @@ class myGNN(torch.nn.Module):
                     attentions["std"].append(att_reshaped.std(dim=0).cpu().detach())
                     del att_reshaped, attn_weights_all
 
-            x = layer(x, edge_index, edge_weight)
+            if self.conv_class == TransformerConv or 'edge_weight' in signature(layer.conv.forward).parameters:
+                x = layer(x, edge_index, edge_weight)
+            else:
+                x = layer(x, edge_index)
 
         x = self.layers[0].act(self.norm_final(x))
         x = self.fc(x)
