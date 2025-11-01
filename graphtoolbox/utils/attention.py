@@ -8,33 +8,61 @@ from sklearn.decomposition import PCA
 import torch
 import umap
 
+@torch.no_grad()
 def load_attention_batches(directory_path: str) -> tuple[torch.Tensor, torch.Tensor]:
     """
-    Load and assemble attention matrices saved in batch files from a given directory.
-
-    Each file is expected to be a `.pt` file containing the following keys:
-
-    - ``"attention_weights"``: list of L tensors, each of shape ``[E_total, H]``,
-      where ``E_total = E_per_graph × num_graphs``.
-    - ``"edge_idx"``: tensor of shape ``[2, E_per_graph]``, shared across all graphs.
-
-    The function reconstructs a tensor of shape ``[L, H, total_num_graphs, E_per_graph]``
-    by reshaping and stacking the attention data across batches.
-
+    Load and assemble attention weights dumped in batch files produced by a model.
     Parameters
     ----------
     directory_path : str
-        Path to the directory containing batch files named as ``num_batch{i}.pt``.
-
+        Path to a directory containing attention dump files. The function expects files
+        with names matching the pattern "num_batch{n}.pt" (e.g. "num_batch0.pt",
+        "num_batch1.pt", ...). Files are processed in ascending numeric order.
+    Expected file contents (per file)
+    ---------------------------------
+    Each valid .pt file must be a dict-like object (as saved by torch.save) containing:
+    - "attention_weights": list of L torch.Tensor instances, each of shape [E_total, H],
+      where L is number of layers, E_total is total number of edges across B graphs in
+      the batch, and H is number of attention heads.
+    - "edge_idx": torch.Tensor of shape [2, E_graph], the canonical edge index for a
+      single graph (E_graph is number of edges per graph).
+    Optional:
+    - "num_graphs": integer B, number of graphs in the batch. If absent, B is inferred
+      as E_total // E_graph.
+    Behavior
+    --------
+    For each valid batch file:
+    - Stacks the per-layer attention tensors into shape [L, E_total, H].
+    - Reshapes them to [L, B, E_graph, H] (using provided or inferred B).
+    - Permutes to [L, H, B, E_graph].
+    - Accumulates across files by concatenating along the graph dimension (B axis).
+    The function returns the concatenated attention tensor for all processed batches
+    and the edge index tensor from the first valid file encountered.
     Returns
     -------
-    all_attentions : torch.Tensor
-        Tensor of shape ``[L, H, total_num_graphs, E_per_graph]``.
-        Concatenated attention weights across all batches.
-    edge_index : torch.Tensor
-        Tensor of shape ``[2, E_per_graph]``.
-        Edge indices assumed to be consistent across all batches.
+    tuple[torch.Tensor, torch.Tensor]
+        - all_attentions: torch.Tensor of shape [L, H, G_total, E_graph], where
+          L = number of layers, H = number of heads, G_total = total number of graphs
+          concatenated across all batch files, and E_graph = number of edges per graph.
+        - edge_index: torch.Tensor of shape [2, E_graph], the canonical edge index for
+          a single graph (taken from the first valid file).
+    Notes
+    -----
+    - Files that do not contain both "attention_weights" and "edge_idx" are skipped and
+      produce a printed warning.
+    - Files are loaded with torch.load(..., map_location="cpu").
+    - A ValueError is raised if sizes are inconsistent within a file (e.g., E_total not
+      divisible by E_graph or provided num_graphs not matching E_total // E_graph).
+    - A RuntimeError is raised if no valid attention dump files are found in the
+      directory.
+    Examples
+    --------
+    Assuming directory contains num_batch0.pt and num_batch1.pt with compatible shapes:
+    >>> all_attn, edge_idx = load_attention_batches("/path/to/dumps")
+    >>> all_attn.shape  # -> (L, H, G_total, E_graph)
+    >>> edge_idx.shape  # -> (2, E_graph)
     """
+    
     all_graphs = []
     edge_index = None
 
@@ -44,69 +72,156 @@ def load_attention_batches(directory_path: str) -> tuple[torch.Tensor, torch.Ten
     )
 
     for file in batch_files:
-        path = os.path.join(directory_path, file)
-        data = torch.load(path)
-
+        data = torch.load(os.path.join(directory_path, file), map_location="cpu")
         if 'attention_weights' not in data or 'edge_idx' not in data:
-            print(f"Fichier {file} mal formé ou incomplet.")
+            print(f"⚠️ Fichier {file} mal formé.")
             continue
 
-        attn_per_layer = data['attention_weights']
+        attn_per_layer = data['attention_weights']  # list len L
         edge_index = data['edge_idx'] if edge_index is None else edge_index
 
         L = len(attn_per_layer)
         E_total, H = attn_per_layer[0].shape
-        E_per_graph = edge_index.shape[1]
-        num_graphs = E_total // E_per_graph
+        E_graph = edge_index.shape[1]
+        B = data.get('num_graphs', E_total // E_graph)
+        if E_total % E_graph != 0 or B != (E_total // E_graph):
+            raise ValueError(f"Inconsistent sizes in {file}: E_total={E_total}, E_graph={E_graph}, B={B}")
 
-        attn_tensor = torch.stack(attn_per_layer, dim=0)  # [L, E_total, H]
-        attn_tensor = attn_tensor.view(L, num_graphs, E_per_graph, H)  # [L, B, E, H]
-        attn_tensor = attn_tensor.permute(0, 3, 1, 2)  # [L, H, B, E]
+        # [L, E_total, H] -> [L, B, E_graph, H] -> [L, H, B, E_graph]
+        attn_tensor = torch.stack(attn_per_layer, dim=0)                  # [L, E_total, H]
+        attn_tensor = attn_tensor.view(L, B, E_graph, H).permute(0, 3, 1, 2)
         all_graphs.append(attn_tensor)
 
-    all_attentions = torch.cat(all_graphs, dim=2)  # [L, H, nb_graph_total, E]
-    return all_attentions, edge_index
+    if not all_graphs:
+        raise RuntimeError(f"Aucun dump d'attention trouvé dans {directory_path}")
+
+    all_attentions = torch.cat(all_graphs, dim=2)  # [L, H, G_total, E_graph]
+    return all_attentions, edge_index  # edge_index du graphe simple [2, E_graph]
 
 def compute_attention_statistics(
     all_attentions: torch.Tensor,
     edge_index: torch.Tensor
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
-    Compute the mean and standard deviation of attention scores for each layer and head,
-    in a fully vectorized way without looping over individual graphs.
+    Compute per-head, per-layer attention mean and standard-deviation mapped to adjacency matrices.
+
+    This function takes attention scores for multiple graphs (or graph instances) and an edge index,
+    computes the mean and standard deviation of each attention value across the graph dimension, then
+    projects those per-edge statistics into dense adjacency tensors with compacted node indices.
 
     Parameters
     ----------
-    all_attentions : torch.Tensor of shape [L, H, G, E]
-        Attention weights for all layers (L), heads (H), graphs (G), and edges (E).
-    edge_index : torch.Tensor of shape [2, E]
-        Edge index tensor containing sender and receiver node indices.
+    all_attentions : torch.Tensor
+        Attention values with shape (L, H, G, E) where
+          - L is number of layers,
+          - H is number of heads,
+          - G is number of graphs / graph instances (the dimension over which statistics are computed),
+          - E is number of edges (must match the number of columns / rows in edge_index).
+        The dtype and device of the returned adjacency tensors match this tensor.
+
+    edge_index : torch.Tensor or array-like
+        Graph edge indices in either of the two common formats:
+          - shape (2, E): first row = source nodes, second row = target nodes, or
+          - shape (E, 2): rows = (source, target) pairs.
+        Values are converted to long and moved to the same device as all_attentions.
+        Node ids need not be contiguous; the function will compact them to a contiguous range
+        [0, n_used-1] where n_used is the number of unique nodes present in edge_index.
 
     Returns
     -------
-    avg_attn : torch.Tensor of shape [L, H, N, N]
-        Mean attention matrix for each layer and head, aggregated over graphs.
-    std_attn : torch.Tensor of shape [L, H, N, N]
-        Standard deviation of attention matrices for each layer and head.
+    tuple[torch.Tensor, torch.Tensor]
+        (mean_adj, std_adj) where both tensors have shape (L, H, n_used, n_used):
+          - mean_adj[l, h, i, j] is the mean attention (over G) of the edge that maps to
+            compacted source node i and target node j for layer l and head h.
+          - std_adj similarly stores the standard deviation over G.
+        Entries corresponding to node pairs not present in edge_index are zero-initialized.
+        The returned tensors share the device and dtype of all_attentions.
+
+    Notes and behaviour
+    -------------------
+    - The per-edge mean and standard deviation are computed along the graph dimension (G).
+    - Node ids in edge_index are compacted to remove gaps; the returned adjacency tensors have
+      minimal dimension covering only nodes that actually appear in edge_index.
+    - If edge_index contains multiple edges that map to the same (source, target) pair (after
+      compaction), the corresponding entry in the adjacency tensors will be assigned from the
+      last occurrence(s) in edge_index (i.e., later assignments overwrite earlier ones). If you
+      expect parallel edges and wish to aggregate them (e.g., average), pre-aggregate edge values
+      before calling this function.
+    - The function preserves device and dtype of all_attentions for the outputs.
+    - Input edge_index is validated to be 2D with one dimension equal to 2; otherwise a ValueError
+      is raised.
+
+    Raises
+    ------
+    ValueError
+        If edge_index does not have shape (2, E) or (E, 2).
+
+    Computational complexity
+    ------------------------
+    - Time: O(L * H * E + cost_of_unique_and_mapping) to compute per-edge statistics and fill the
+      adjacency tensors.
+    - Memory: The adjacency outputs require O(L * H * n_used^2) memory; for large n_used this can be
+      substantial. Consider sparse aggregation if n_used is large.
+
+    Example
+    -------
+    Assume attentions with 2 layers, 3 heads, 4 graphs and 5 edges:
+        all_attentions.shape == (2, 3, 4, 5)
+    and edge_index shape is (2, 5) or (5, 2). The function returns two tensors each of shape
+        (2, 3, n_used, n_used)
+    where n_used is the number of unique nodes present in edge_index.
     """
     L, H, G, E = all_attentions.shape
-    senders = edge_index[0]
-    receivers = edge_index[1]
-    N = torch.max(edge_index).item() + 1
 
-    mean_vec = all_attentions.mean(dim=2)  # [L, H, E]
-    std_vec = all_attentions.std(dim=2)    # [L, H, E]
+    # Standardize edge_index to [2, E] on same device and long dtype
+    if not isinstance(edge_index, torch.Tensor):
+        edge_index = torch.as_tensor(edge_index)
+    ei = edge_index.detach().long()
+    if ei.dim() != 2 or 2 not in ei.shape:
+        raise ValueError("edge_index must have shape [2, E] or [E, 2].")
+    if ei.shape[0] == 2:
+        src, tgt = ei[0], ei[1]
+    else:  # [E, 2]
+        src, tgt = ei[:, 0], ei[:, 1]
+    src = src.to(all_attentions.device).long()
+    tgt = tgt.to(all_attentions.device).long()
 
-    avg_attn = torch.zeros((L, H, N, N), dtype=all_attentions.dtype, device=all_attentions.device)
-    std_attn = torch.zeros_like(avg_attn)
+    # Compact node ids to remove gaps and avoid trailing all-zero rows/cols
+    unique_nodes = torch.unique(torch.cat([src, tgt])).sort()[0]
+    n_used = int(unique_nodes.numel())
+    id_map = torch.full(
+        (int(unique_nodes.max().item()) + 1,),
+        -1,
+        dtype=torch.long,
+        device=all_attentions.device
+    )
+    id_map[unique_nodes] = torch.arange(n_used, device=all_attentions.device)
+    src_c = id_map[src]
+    tgt_c = id_map[tgt]
 
+    # Compute per-edge statistics across graphs: [L, H, E]
+    mean_per_edge = all_attentions.mean(dim=2)
+    std_per_edge = all_attentions.std(dim=2)
+
+    # Project to adjacency tensors [L, H, n_used, n_used]
+    mean_adj = torch.zeros(
+        (L, H, n_used, n_used),
+        device=all_attentions.device,
+        dtype=all_attentions.dtype
+    )
+    std_adj = torch.zeros(
+        (L, H, n_used, n_used),
+        device=all_attentions.device,
+        dtype=all_attentions.dtype
+    )
+
+    # Fill adjacency using compacted indices
     for l in range(L):
         for h in range(H):
-            avg_attn[l, h].index_put_((senders, receivers), mean_vec[l, h], accumulate=True)
-            std_attn[l, h].index_put_((senders, receivers), std_vec[l, h], accumulate=True)
+            mean_adj[l, h, src_c, tgt_c] = mean_per_edge[l, h]
+            std_adj[l, h, src_c, tgt_c] = std_per_edge[l, h]
 
-    return avg_attn, std_attn
-
+    return mean_adj, std_adj
 def plot_attention_statistics(
     avg_attn: torch.Tensor,
     std_attn: torch.Tensor,
@@ -264,7 +379,7 @@ def pca_analysis_attention(
     ----------
     all_attentions : torch.Tensor of shape [L, H, G, E] or [G, E]
         Attention values. Can be the full tensor from a model or already flattened for a given head.
-    edge_index : torch.Tensor of shape [2, E]
+    edge_index : torch.Tensor of shape [2, E] or [E, 2]
         Edge indices (source and target nodes).
     layer_idx : int, optional (default=0)
         Index of the attention layer to analyze.
@@ -278,23 +393,48 @@ def pca_analysis_attention(
     None
         Displays plots directly.
     """
-    if len(all_attentions.shape) == 4:
-        L, H, G, E = all_attentions.shape
-        src, tgt = edge_index
-        att_flat = all_attentions[layer_idx, head_idx, :, :]  # [G, E]
-        att_flat = att_flat.cpu().numpy()
-        N = int(src.max().item() + 1)
-    elif len(all_attentions.shape) == 2: 
-        att_flat = all_attentions
-        N = int(all_attentions.shape[1]**0.5)
+    # Normalize edge_index and compact node ids to avoid trailing zero rows/cols
+    if not isinstance(edge_index, torch.Tensor):
+        edge_index = torch.as_tensor(edge_index)
+    ei = edge_index.detach().long()
+    if ei.dim() != 2 or 2 not in ei.shape:
+        raise ValueError("edge_index must have shape [2, E] or [E, 2].")
+    if ei.shape[0] == 2:
+        src_t, tgt_t = ei[0], ei[1]
+    else:  # [E, 2]
+        src_t, tgt_t = ei[:, 0], ei[:, 1]
+    src_t = src_t.long()
+    tgt_t = tgt_t.long()
 
-    pca = PCA(n_components=n_components)
+    unique_nodes = torch.unique(torch.cat([src_t, tgt_t])).sort()[0]
+    n_used = int(unique_nodes.numel())
+    id_map = torch.full((int(unique_nodes.max().item()) + 1,), -1, dtype=torch.long)
+    id_map[unique_nodes] = torch.arange(n_used, dtype=torch.long)
+    src_c = id_map[src_t].cpu().numpy()
+    tgt_c = id_map[tgt_t].cpu().numpy()
+
+    # Prepare attention matrix [G, E]
+    if isinstance(all_attentions, torch.Tensor):
+        if all_attentions.dim() == 4:
+            # [L, H, G, E] -> pick layer/head -> [G, E]
+            att_flat = all_attentions[layer_idx, head_idx].detach().cpu().numpy()
+        elif all_attentions.dim() == 2:
+            att_flat = all_attentions.detach().cpu().numpy()
+        else:
+            raise ValueError("all_attentions must have shape [L, H, G, E] or [G, E].")
+    else:
+        att_flat = np.asarray(all_attentions)
+
+    # Robust n_components
+    n_components_eff = max(1, min(n_components, att_flat.shape[0], att_flat.shape[1]))
+    pca = PCA(n_components=n_components_eff)
     X_pca = pca.fit_transform(att_flat)
     explained_variance = pca.explained_variance_ratio_
-    components = pca.components_  # [n_components, E]
+    components = pca.components_  # [n_components_eff, E]
 
+    # Explained variance plot
     plt.figure(figsize=(8, 4))
-    plt.plot(range(1, n_components + 1), explained_variance, marker='o')
+    plt.plot(range(1, n_components_eff + 1), explained_variance, marker='o')
     plt.xlabel("Principal Component")
     plt.ylabel("Explained Variance")
     plt.title("Energy of each principal component")
@@ -302,9 +442,9 @@ def pca_analysis_attention(
     plt.tight_layout()
     plt.show()
 
+    # 2D PCA projection
     time_labels = np.linspace(0, 1, X_pca.shape[0])
-    hsv_colors = time_labels 
-
+    hsv_colors = time_labels
     plt.figure(figsize=(8, 6))
     scatter = plt.scatter(X_pca[:, 0], X_pca[:, 1], c=hsv_colors, cmap='hsv', s=1)
     plt.title(f"PCA of Attention vectors\n(Layer {layer_idx}, Head {head_idx})")
@@ -316,23 +456,25 @@ def pca_analysis_attention(
     plt.grid(True)
     plt.show()
 
-    fig, axes = plt.subplots(1, n_components, figsize=(4 * n_components, 4))
-    if n_components == 1:
+    # Heatmaps of components projected back to adjacency (using compacted ids)
+    fig, axes = plt.subplots(1, n_components_eff, figsize=(4 * n_components_eff, 4))
+    if n_components_eff == 1:
         axes = [axes]
 
+    E_from_edges = src_c.shape[0]
     for idx, comp in enumerate(components):
-        mat = torch.zeros(N, N)
-        if len(all_attentions.shape) == 4:
-            mat[src, tgt] = torch.tensor(comp)
-            mat = mat.numpy()
-        elif len(all_attentions.shape) == 2: 
-            mat = comp.reshape(N,N)
+        if comp.size == n_used * n_used:
+            mat = comp.reshape(n_used, n_used)
+        elif comp.size == E_from_edges:
+            mat = np.zeros((n_used, n_used), dtype=float)
+            mat[src_c, tgt_c] = comp
+        else:
+            mat = np.zeros((n_used, n_used), dtype=float)
 
         sns.heatmap(
-            mat, 
-            cmap="rocket_r", 
-            ax=axes[idx], 
-            vmin=-1, vmax=1, 
+            mat,
+            cmap="rocket_r",
+            ax=axes[idx],
             cbar=True
         )
         axes[idx].set_title(f"PC{idx+1}")
@@ -570,3 +712,108 @@ def hierarchical_attention_fusion(attn_tensor: torch.Tensor, k: int, **kwargs) -
         fused_per_layer.append(fused_layer)
     A_final = spectral_fusion(fused_per_layer, k, **kwargs)
     return A_final
+
+@torch.no_grad()
+def attention_to_dense(all_attentions: torch.Tensor, edge_index: torch.Tensor, num_nodes: int = 12) -> torch.Tensor:
+    """
+    Projette [L, H, G, E] vers [L, H, G, N, N] en “scatterant” sur edge_index.
+    """
+    if not isinstance(edge_index, torch.Tensor):
+        edge_index = torch.as_tensor(edge_index)
+    if edge_index.shape[0] != 2:
+        edge_index = edge_index.T
+    src, tgt = edge_index[0].long(), edge_index[1].long()
+
+    L, H, G, E = all_attentions.shape
+    N = int(num_nodes)
+    dense = all_attentions.new_zeros((L, H, G, N, N))
+    # broadcasting: [L,H,G,1] vers [L,H,G,E]
+    # scatter par index 2D (src,tgt) sur la dernière dim
+    for l in range(L):
+        for h in range(H):
+            for g in range(G):
+                dense[l, h, g, src, tgt] = all_attentions[l, h, g]
+    return dense  # [L,H,G,N,N]
+
+def pca_per_head(all_attentions: torch.Tensor,
+                 edge_index: torch.Tensor,
+                 num_nodes: int,
+                 n_components: int = 10):
+    """
+    Independent PCA for each (layer, head) pair: returns a list of results.
+    """
+    dense = attention_to_dense(all_attentions, edge_index, num_nodes=num_nodes)  # [L,H,G,N,N]
+    L, H, G, N, _ = dense.shape
+    results = []
+    for l in range(L):
+        for h in range(H):
+            X = dense[l, h].reshape(G, N * N).cpu().numpy()  # [G, N*N]
+            k = max(1, min(n_components, X.shape[0], X.shape[1]))
+            pca = PCA(n_components=k)
+            X_pca = pca.fit_transform(X)
+            comps = pca.components_.reshape(k, N, N)  # [k,N,N]
+            results.append({
+                "layer": l,
+                "head": h,
+                "explained_variance": pca.explained_variance_ratio_,
+                "components": comps,     # [k,N,N]
+                "scores": X_pca,         # [G,k]
+                "mean_matrix": X.mean(axis=0).reshape(N, N)
+            })
+    return results  # len = L*H
+
+def pca_global_mean(all_attentions: torch.Tensor,
+                    edge_index: torch.Tensor,
+                    num_nodes: int,
+                    n_components: int = 10):
+    """
+    PCA globale après moyenne sur L et H: [G,N,N] -> PCA.
+    """
+    dense = attention_to_dense(all_attentions, edge_index, num_nodes=num_nodes)  # [L,H,G,N,N]
+    G, N = dense.shape[2], num_nodes
+    X = dense.mean(dim=(0,1)).reshape(G, N * N).cpu().numpy()  # [G, N*N]
+    k = max(1, min(n_components, X.shape[0], X.shape[1]))
+    pca = PCA(n_components=k)
+    X_pca = pca.fit_transform(X)
+    comps = pca.components_.reshape(k, N, N)
+    return {
+        "explained_variance": pca.explained_variance_ratio_,
+        "components": comps,     # [k,N,N]
+        "scores": X_pca,         # [G,k]
+        "mean_matrix": X.mean(axis=0).reshape(N, N)
+    }
+
+def plot_explained_variance(explained, title="Explained variance", **kwargs):
+    plt.figure(figsize=kwargs.get('figsize', (6,4)))
+    plt.plot(range(1, len(explained)+1), explained, marker='o')
+    plt.xlabel("PC")
+    plt.ylabel("Explained variance")
+    plt.title(title)
+    plt.grid(True)
+    plt.tight_layout()
+    plt.show()
+
+def plot_components(components: np.ndarray, **kwargs):
+    """
+    components: [k,N,N]
+    """
+    max_cols = kwargs.get('max_cols', 5)
+    cmap = kwargs.get('cmap', 'rocket_r')
+    suptitle = kwargs.get('suptitle', "Principal Components")
+    k = components.shape[0]
+    cols = min(max_cols, k)
+    rows = int(np.ceil(k / cols))
+    figsize = kwargs.get('figsize', (4*cols, 4*rows))
+    fig, axes = plt.subplots(rows, cols, figsize=figsize)
+    if rows*cols == 1:
+        axes = np.array([axes])
+    axes = axes.ravel()
+    for i in range(rows*cols):
+        ax = axes[i]
+        ax.axis('off')
+        if i < k:
+            sns.heatmap(components[i], cmap=cmap, ax=ax, cbar=True)
+            ax.set_title(f"PC{i+1}")
+    plt.suptitle(suptitle)
+    plt.tight_layout()
+    plt.show()
