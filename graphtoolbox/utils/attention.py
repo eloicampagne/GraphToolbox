@@ -13,23 +13,27 @@ def load_attention_batches(directory_path: str) -> tuple[torch.Tensor, torch.Ten
     """
     Load and assemble attention weights dumped in batch files produced by a model.
 
-    :param directory_path: Path to a directory containing attention dump files. The function expects files
-        with names matching the pattern "num_batch{n}.pt" (e.g. "num_batch0.pt",
-        "num_batch1.pt", ...). Files are processed in ascending numeric order.
-    :type directory_path: str
+    Parameters
+    ----------
+    directory_path : str
+        Path to a directory containing attention dump files. The function expects files
+        named like "num_batch{n}.pt" (for example "num_batch0.pt"). Files are processed
+        in ascending numeric order.
 
-    :returns: A tuple (all_attentions, edge_index)
-        - all_attentions: torch.Tensor of shape [L, H, G_total, E_graph], where
-          L = number of layers, H = number of heads, G_total = total number of graphs
-          concatenated across all batch files, and E_graph = number of edges per graph.
-        - edge_index: torch.Tensor of shape [2, E_graph], the canonical edge index for
-          a single graph (taken from the first valid file).
-    :rtype: tuple[torch.Tensor, torch.Tensor]
+    Returns
+    -------
+    tuple[torch.Tensor, torch.Tensor]
+        A tuple (all_attentions, edge_index)
+        - all_attentions: tensor of shape [L, H, G_total, E_graph]
+        - edge_index: tensor of shape [2, E_graph]
 
-    :raises RuntimeError: If no valid attention dump files are found in the directory.
-    :raises ValueError: If sizes are inconsistent within a file.
+    Raises
+    ------
+    RuntimeError
+        If no valid attention dump files are found in the directory.
+    ValueError
+        If sizes are inconsistent within a file.
     """
-    
     all_graphs = []
     edge_index = None
 
@@ -65,78 +69,33 @@ def load_attention_batches(directory_path: str) -> tuple[torch.Tensor, torch.Ten
     all_attentions = torch.cat(all_graphs, dim=2)  # [L, H, G_total, E_graph]
     return all_attentions, edge_index  # edge_index du graphe simple [2, E_graph]
 
+
 def compute_attention_statistics(
     all_attentions: torch.Tensor,
     edge_index: torch.Tensor
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
-    Compute per-head, per-layer attention mean and standard-deviation mapped to adjacency matrices.
-
-    This function takes attention scores for multiple graphs (or graph instances) and an edge index,
-    computes the mean and standard deviation of each attention value across the graph dimension, then
-    projects those per-edge statistics into dense adjacency tensors with compacted node indices.
+    Compute per-head, per-layer attention mean and standard deviation mapped to adjacency matrices.
 
     Parameters
     ----------
     all_attentions : torch.Tensor
         Attention values with shape (L, H, G, E) where
-          - L is number of layers,
-          - H is number of heads,
-          - G is number of graphs / graph instances (the dimension over which statistics are computed),
-          - E is number of edges (must match the number of columns / rows in edge_index).
-        The dtype and device of the returned adjacency tensors match this tensor.
-
+        L = number of layers, H = number of heads, G = number of graphs, E = number of edges.
     edge_index : torch.Tensor or array-like
-        Graph edge indices in either of the two common formats:
-          - shape (2, E): first row = source nodes, second row = target nodes, or
-          - shape (E, 2): rows = (source, target) pairs.
-        Values are converted to long and moved to the same device as all_attentions.
-        Node ids need not be contiguous; the function will compact them to a contiguous range
-        [0, n_used-1] where n_used is the number of unique nodes present in edge_index.
+        Edge indices in shape (2, E) or (E, 2). Node ids need not be contiguous; they
+        will be compacted to a contiguous range.
 
     Returns
     -------
     tuple[torch.Tensor, torch.Tensor]
-        (mean_adj, std_adj) where both tensors have shape (L, H, n_used, n_used):
-          - mean_adj[l, h, i, j] is the mean attention (over G) of the edge that maps to
-            compacted source node i and target node j for layer l and head h.
-          - std_adj similarly stores the standard deviation over G.
-        Entries corresponding to node pairs not present in edge_index are zero-initialized.
-        The returned tensors share the device and dtype of all_attentions.
-
-    Notes and behaviour
-    -------------------
-    - The per-edge mean and standard deviation are computed along the graph dimension (G).
-    - Node ids in edge_index are compacted to remove gaps; the returned adjacency tensors have
-      minimal dimension covering only nodes that actually appear in edge_index.
-    - If edge_index contains multiple edges that map to the same (source, target) pair (after
-      compaction), the corresponding entry in the adjacency tensors will be assigned from the
-      last occurrence(s) in edge_index (i.e., later assignments overwrite earlier ones). If you
-      expect parallel edges and wish to aggregate them (e.g., average), pre-aggregate edge values
-      before calling this function.
-    - The function preserves device and dtype of all_attentions for the outputs.
-    - Input edge_index is validated to be 2D with one dimension equal to 2; otherwise a ValueError
-      is raised.
+        (mean_adj, std_adj) both tensors of shape (L, H, n_used, n_used), where n_used is the
+        number of unique nodes present in edge_index. Entries for absent node pairs are zero.
 
     Raises
     ------
     ValueError
         If edge_index does not have shape (2, E) or (E, 2).
-
-    Computational complexity
-    ------------------------
-    - Time: O(L * H * E + cost_of_unique_and_mapping) to compute per-edge statistics and fill the
-      adjacency tensors.
-    - Memory: The adjacency outputs require O(L * H * n_used^2) memory; for large n_used this can be
-      substantial. Consider sparse aggregation if n_used is large.
-
-    Example
-    -------
-    Assume attentions with 2 layers, 3 heads, 4 graphs and 5 edges:
-        all_attentions.shape == (2, 3, 4, 5)
-    and edge_index shape is (2, 5) or (5, 2). The function returns two tensors each of shape
-        (2, 3, n_used, n_used)
-    where n_used is the number of unique nodes present in edge_index.
     """
     L, H, G, E = all_attentions.shape
 
@@ -189,6 +148,7 @@ def compute_attention_statistics(
             std_adj[l, h, src_c, tgt_c] = std_per_edge[l, h]
 
     return mean_adj, std_adj
+
 def plot_attention_statistics(
     avg_attn: torch.Tensor,
     std_attn: torch.Tensor,
