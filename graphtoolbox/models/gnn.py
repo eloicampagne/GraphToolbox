@@ -5,6 +5,13 @@ from inspect import signature
 from einops import rearrange
 from torch_geometric.nn.models.deepgcn import DeepGCNLayer
 
+import torch
+from torch_geometric.nn import GATv2Conv, TransformerConv, GCNConv, SAGEConv
+from torch.nn import Linear, ReLU, LayerNorm
+from inspect import signature
+from einops import rearrange
+from torch_geometric.nn.models.deepgcn import DeepGCNLayer
+
 class myGNN(torch.nn.Module):
     """
     A flexible deep Graph Neural Network supporting various convolution types
@@ -134,49 +141,65 @@ class myGNN(torch.nn.Module):
             Model output (and optionally attention weights dictionary).
         """
         if x.dim() == 3:
+            # garder N,B pour construire l’edge_index bloc-diagonal si besoin
+            N_per_graph, B, _ = x.shape
             x = rearrange(x, 'n b c -> (b n) c')
+        else:
+            N_per_graph, B = x.shape[0], 1
+
         if edge_weight is not None and self.conv_class == TransformerConv:
             edge_weight = edge_weight.unsqueeze(1)
         x = self.node_encoder(x)
 
+        # Préparer edge_index/edge_weight locaux (bloc-diagonal si B>1)
+        local_edge_index = edge_index
+        local_edge_weight = edge_weight
+        if return_attention and B > 1:
+            local_edge_index = _make_block_diag_edge_index(edge_index, N_per_graph, B)
+            if edge_weight is not None:
+                # on répète les poids sur chaque graphe
+                repeat_times = B if edge_weight.dim() == 1 else (B, 1)
+                local_edge_weight = edge_weight.repeat(repeat_times)
+
         if return_attention:
-            batch_size = kwargs.get('batch_size')
             save = kwargs.get("save", False)
             save_path = kwargs.get("save_path", None)
-            num_edges_per_graph = kwargs.get('num_edges_per_graph', None)
-            assert num_edges_per_graph is not None, 'num_edges_per_graph is None!'
-
-            attentions = {
-                "attention_weights": [],
-                "edge_idx": edge_index[:, :num_edges_per_graph].cpu().detach(),
-            } if save else {
-                "first_graph": [],
-                "mean": [],
-                "std": []
-            }
+            num_edges_per_graph = edge_index.size(1)
+            num_graphs = B
+            if save:
+                attentions = {
+                    "attention_weights": [],   # liste (L) de tensors [E_graph*B, H]
+                    "edge_idx": edge_index.detach().cpu(),  # [2, E_graph] du graphe simple
+                    "num_graphs": num_graphs,  # B
+                }
+            else:
+                attentions = {
+                    "first_graph": [],         # par couche: (weights_first_graph [E_graph,H], edge_idx_first [2,E_graph])
+                    "mean": [],                # par couche: [E_graph, H] moyenne sur B
+                    "std": []                  # par couche: [E_graph, H] std sur B
+                }
 
         for _, layer in enumerate(self.layers):
             if return_attention:
-                _, attn = layer.conv(x, edge_index, edge_weight, return_attention_weights=True)
-                edge_idx_all, attn_weights_all = attn
+                _, attn = layer.conv(x, local_edge_index, local_edge_weight, return_attention_weights=True)
+                edge_idx_all, attn_weights_all = attn  # edge_idx_all: [2, E_graph*B]; attn_weights_all: [E_graph*B, H]
 
-                if batch_size is None:
-                    raise ValueError("`batch_size` must be provided when `return_attention=True`.")
-                edge_idx_first = edge_idx_all[:, :num_edges_per_graph]
                 if save:
-                    attentions['attention_weights'].append(attn_weights_all.cpu().detach())
+                    attentions["attention_weights"].append(attn_weights_all.detach().cpu())
+                    del attn_weights_all
                 else:
-                    att_first = attn_weights_all[:num_edges_per_graph]
-                    attentions["first_graph"].append((att_first.cpu().detach(), edge_idx_first.cpu().detach()))
-                    att_reshaped = attn_weights_all.view(batch_size, num_edges_per_graph, self.heads)
+                    # reshape propre: [B, E_graph, H]
+                    att_reshaped = attn_weights_all.view(num_graphs, num_edges_per_graph, self.heads)
+                    att_first = att_reshaped[0]  # [E_graph, H]
+                    attentions["first_graph"].append((att_first.cpu().detach(), edge_index.cpu().detach()))
                     attentions["mean"].append(att_reshaped.mean(dim=0).cpu().detach())
                     attentions["std"].append(att_reshaped.std(dim=0).cpu().detach())
                     del att_reshaped, attn_weights_all
 
-            if self.conv_class == TransformerConv or 'edge_weight' in signature(layer.conv.forward).parameters:
-                x = layer(x, edge_index, edge_weight)
+            if 'edge_weight' in signature(layer.conv.forward).parameters or 'edge_attr' in signature(layer.conv.forward).parameters:
+                x = layer(x, local_edge_index, local_edge_weight)
             else:
-                x = layer(x, edge_index)
+                x = layer(x, local_edge_index)
 
         x = self.layers[0].act(self.norm_final(x))
         x = self.fc(x)
@@ -187,6 +210,36 @@ class myGNN(torch.nn.Module):
             torch.save(attentions, save_path)
 
         return (x, attentions) if return_attention else x
+
+def _make_block_diag_edge_index(edge_index: torch.Tensor, num_nodes: int, batch_size: int) -> torch.Tensor:
+    """
+    Create a block-diagonal edge_index representing a batch of disjoint, identical graphs.
+    Parameters
+    ----------
+    edge_index : torch.Tensor
+        2 x E tensor of edge indices (source, target) for a single graph.
+    num_nodes : int
+        Number of nodes in the single graph (used to offset node indices).
+    batch_size : int
+        Number of graph copies to stack; if 1 the original edge_index is returned.
+    Returns
+    -------
+    torch.Tensor
+        2 x (batch_size * E) edge_index for the disjoint union of the batch.
+        The returned tensor has the same dtype and device as the input.
+    Notes
+    -----
+    Each copy's node indices are shifted by k * num_nodes (for k in [0, batch_size-1])
+    so that graphs are kept disjoint when combined.
+    """
+    
+    if batch_size == 1:
+        return edge_index
+    offsets = torch.arange(batch_size, device=edge_index.device, dtype=edge_index.dtype) * num_nodes
+    src = edge_index[0].unsqueeze(1) + offsets.unsqueeze(0)  # [E, B]
+    dst = edge_index[1].unsqueeze(1) + offsets.unsqueeze(0)  # [E, B]
+    eidx_bd = torch.stack([src.reshape(-1), dst.reshape(-1)], dim=0)  # [2, B*E]
+    return eidx_bd
 
 class GCNEncoder(torch.nn.Module):
     """
