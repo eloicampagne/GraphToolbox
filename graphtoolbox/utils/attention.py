@@ -12,55 +12,22 @@ import umap
 def load_attention_batches(directory_path: str) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Load and assemble attention weights dumped in batch files produced by a model.
-    Parameters
-    ----------
-    directory_path : str
-        Path to a directory containing attention dump files. The function expects files
+
+    :param directory_path: Path to a directory containing attention dump files. The function expects files
         with names matching the pattern "num_batch{n}.pt" (e.g. "num_batch0.pt",
         "num_batch1.pt", ...). Files are processed in ascending numeric order.
-    Expected file contents (per file)
-    ---------------------------------
-    Each valid .pt file must be a dict-like object (as saved by torch.save) containing:
-    - "attention_weights": list of L torch.Tensor instances, each of shape [E_total, H],
-      where L is number of layers, E_total is total number of edges across B graphs in
-      the batch, and H is number of attention heads.
-    - "edge_idx": torch.Tensor of shape [2, E_graph], the canonical edge index for a
-      single graph (E_graph is number of edges per graph).
-    Optional:
-    - "num_graphs": integer B, number of graphs in the batch. If absent, B is inferred
-      as E_total // E_graph.
-    Behavior
-    --------
-    For each valid batch file:
-    - Stacks the per-layer attention tensors into shape [L, E_total, H].
-    - Reshapes them to [L, B, E_graph, H] (using provided or inferred B).
-    - Permutes to [L, H, B, E_graph].
-    - Accumulates across files by concatenating along the graph dimension (B axis).
-    The function returns the concatenated attention tensor for all processed batches
-    and the edge index tensor from the first valid file encountered.
-    Returns
-    -------
-    tuple[torch.Tensor, torch.Tensor]
+    :type directory_path: str
+
+    :returns: A tuple (all_attentions, edge_index)
         - all_attentions: torch.Tensor of shape [L, H, G_total, E_graph], where
           L = number of layers, H = number of heads, G_total = total number of graphs
           concatenated across all batch files, and E_graph = number of edges per graph.
         - edge_index: torch.Tensor of shape [2, E_graph], the canonical edge index for
           a single graph (taken from the first valid file).
-    Notes
-    -----
-    - Files that do not contain both "attention_weights" and "edge_idx" are skipped and
-      produce a printed warning.
-    - Files are loaded with torch.load(..., map_location="cpu").
-    - A ValueError is raised if sizes are inconsistent within a file (e.g., E_total not
-      divisible by E_graph or provided num_graphs not matching E_total // E_graph).
-    - A RuntimeError is raised if no valid attention dump files are found in the
-      directory.
-    Examples
-    --------
-    Assuming directory contains num_batch0.pt and num_batch1.pt with compatible shapes:
-    >>> all_attn, edge_idx = load_attention_batches("/path/to/dumps")
-    >>> all_attn.shape  # -> (L, H, G_total, E_graph)
-    >>> edge_idx.shape  # -> (2, E_graph)
+    :rtype: tuple[torch.Tensor, torch.Tensor]
+
+    :raises RuntimeError: If no valid attention dump files are found in the directory.
+    :raises ValueError: If sizes are inconsistent within a file.
     """
     
     all_graphs = []
@@ -231,16 +198,17 @@ def plot_attention_statistics(
     Plot heatmaps of the average and standard deviation attention matrices
     for each layer and attention head.
 
-    Parameters
-    ----------
-    avg_attn : torch.Tensor of shape [L, H, N, N]
-        Mean attention matrices to be visualized.
-    std_attn : torch.Tensor of shape [L, H, N, N]
-        Standard deviation matrices to be visualized.
+    :param avg_attn: Mean attention matrices to be visualized, shape [L, H, N, N].
+    :type avg_attn: torch.Tensor
+    :param std_attn: Standard deviation matrices to be visualized, shape [L, H, N, N].
+    :type std_attn: torch.Tensor
+    :param kwargs: Optional plotting parameters:
+        - figsize: base size for a single head (width, height)
+        - fontsize: title font size
+    :type kwargs: dict
 
-    Returns
-    -------
-    None
+    :returns: None
+    :rtype: None
     """
     L, H, N, _ = avg_attn.shape
     figsize    = kwargs.get('figsize', (3.5, 3))
@@ -716,7 +684,21 @@ def hierarchical_attention_fusion(attn_tensor: torch.Tensor, k: int, **kwargs) -
 @torch.no_grad()
 def attention_to_dense(all_attentions: torch.Tensor, edge_index: torch.Tensor, num_nodes: int = 12) -> torch.Tensor:
     """
-    Projette [L, H, G, E] vers [L, H, G, N, N] en “scatterant” sur edge_index.
+    Project attention values from edge-list format to dense adjacency tensor.
+
+    The function maps an attention tensor of shape [L, H, G, E] (layers, heads,
+    graphs, edges) into a dense tensor of shape [L, H, G, N, N] by scattering
+    edge values on (source, target) indices given by `edge_index`.
+
+    :param all_attentions: Attention tensor with shape [L, H, G, E].
+    :type all_attentions: torch.Tensor
+    :param edge_index: Edge indices; accepted shapes are [2, E] or [E, 2].
+    :type edge_index: torch.Tensor
+    :param num_nodes: Number of nodes N for the output dense adjacency matrices.
+    :type num_nodes: int
+
+    :returns: Dense attention tensor of shape [L, H, G, N, N].
+    :rtype: torch.Tensor
     """
     if not isinstance(edge_index, torch.Tensor):
         edge_index = torch.as_tensor(edge_index)
@@ -740,7 +722,29 @@ def pca_per_head(all_attentions: torch.Tensor,
                  num_nodes: int,
                  n_components: int = 10):
     """
-    Independent PCA for each (layer, head) pair: returns a list of results.
+    Perform PCA independently for each (layer, head) pair on dense attention matrices.
+
+    The function converts the edge-form attention tensor [L, H, G, E] into dense
+    [L, H, G, N, N], reshapes each (layer, head) block into a [G, N*N] matrix and
+    runs PCA, returning per-(layer,head) results.
+
+    :param all_attentions: Attention tensor of shape [L, H, G, E].
+    :type all_attentions: torch.Tensor
+    :param edge_index: Edge indices, used to project edges into NxN dense format.
+    :type edge_index: torch.Tensor
+    :param num_nodes: Number of nodes N used for dense matrices.
+    :type num_nodes: int
+    :param n_components: Maximum number of PCA components to compute per head.
+    :type n_components: int
+
+    :returns: A list of dicts, one per (layer, head), each containing:
+        - "layer": int
+        - "head": int
+        - "explained_variance": array of explained variance ratios
+        - "components": numpy array shaped [k, N, N] of principal components
+        - "scores": numpy array shaped [G, k] of transformed samples
+        - "mean_matrix": numpy array [N, N] the mean attention matrix across G
+    :rtype: list[dict]
     """
     dense = attention_to_dense(all_attentions, edge_index, num_nodes=num_nodes)  # [L,H,G,N,N]
     L, H, G, N, _ = dense.shape
@@ -767,7 +771,19 @@ def pca_global_mean(all_attentions: torch.Tensor,
                     num_nodes: int,
                     n_components: int = 10):
     """
-    PCA globale après moyenne sur L et H: [G,N,N] -> PCA.
+    PCA on the global mean attention matrix (averaged over layers and heads).
+
+    :param all_attentions: Attention tensor [L, H, G, E].
+    :type all_attentions: torch.Tensor
+    :param edge_index: Edge indices used to form dense matrices.
+    :type edge_index: torch.Tensor
+    :param num_nodes: Number of nodes N.
+    :type num_nodes: int
+    :param n_components: Number of PCA components.
+    :type n_components: int
+
+    :returns: Dictionary containing PCA results similar to `pca_per_head`.
+    :rtype: dict
     """
     dense = attention_to_dense(all_attentions, edge_index, num_nodes=num_nodes)  # [L,H,G,N,N]
     G, N = dense.shape[2], num_nodes
@@ -784,6 +800,19 @@ def pca_global_mean(all_attentions: torch.Tensor,
     }
 
 def plot_explained_variance(explained, title="Explained variance", **kwargs):
+    """
+    Plot explained variance ratio of PCA components.
+
+    :param explained: Iterable of explained variance ratios.
+    :type explained: array-like
+    :param title: Plot title.
+    :type title: str
+    :param kwargs: Optional plotting parameters (figsize).
+    :type kwargs: dict
+
+    :returns: None
+    :rtype: None
+    """
     plt.figure(figsize=kwargs.get('figsize', (6,4)))
     plt.plot(range(1, len(explained)+1), explained, marker='o')
     plt.xlabel("PC")
@@ -795,7 +824,19 @@ def plot_explained_variance(explained, title="Explained variance", **kwargs):
 
 def plot_components(components: np.ndarray, **kwargs):
     """
-    components: [k,N,N]
+    Plot a grid of component heatmaps.
+
+    :param components: Array of principal components with shape [k, N, N].
+    :type components: numpy.ndarray
+    :param kwargs: Optional arguments:
+        - max_cols: maximum columns in the grid (default 5)
+        - cmap: colormap (default 'rocket_r')
+        - suptitle: overall figure title
+        - figsize: figure size override
+    :type kwargs: dict
+
+    :returns: None
+    :rtype: None
     """
     max_cols = kwargs.get('max_cols', 5)
     cmap = kwargs.get('cmap', 'rocket_r')
