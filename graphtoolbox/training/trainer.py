@@ -258,7 +258,7 @@ class Trainer:
         if self.return_attention :
             self.return_attention = False
             return (preds, targets, self.edge_index, Lattention_mat) 
-        else :
+        else:
             return (preds, targets, self.edge_index, self.edge_weight)
 
     def _run_epoch(self, optimizer, mode: str, loader: PyGDataLoader, return_attention: bool = False, save: bool = False, dataset_name: str = 'test') -> float:
@@ -297,6 +297,10 @@ class Trainer:
                 os.makedirs(save_path, exist_ok=True)
             clean_dir(save_path)
 
+        # Accumulate attention only on batches with consistent size to avoid None issues
+        tot_dict_attention = None
+        attention_batches = 0
+
         # TODO: add dynamic graph condition
 
         for i, batch in enumerate(loader):
@@ -309,23 +313,36 @@ class Trainer:
                 print(f"[WARN] NaN detected in batch {i}. Skipping batch.")
                 continue
 
-            if (mode == 'eval')  and (return_attention): 
+            if (mode == 'eval') and (return_attention): 
                 if save: 
                     save_path = f"./attention_matrix/{self.model_name}_{self.adj_matrix}/{dataset_name}_batch{self.batch_size}_hidden{self.hidden_channels}_layers{self.num_layers}_epochs{self.num_epochs}_heads{self.heads}/num_batch{i}.pt"
-                    out = self.model(batch.x, batch.edge_index, edge_weight=getattr(batch, 'edge_weight', None), mask=getattr(batch, 'mask_y', None), return_attention=True, batch_size=self.batch_size_save, save=True , save_path=save_path)
+                    out, _ = self.model(batch.x, batch.edge_index, edge_weight=getattr(batch, 'edge_weight', None), mask=getattr(batch, 'mask_y', None), return_attention=True, batch_size=self.batch_size, save=True, save_path=save_path)
                     out = out.squeeze().view(-1, num_nodes).T
                 else:
-                    if i==0:
-                        out, tot_dict_attention = self.model(batch.x, batch.edge_index, edge_weight=getattr(batch, 'edge_weight', None), mask=getattr(batch, 'mask_y', None), return_attention=True, batch_size=self.batch_size)
-                        out = out.squeeze().view(-1, num_nodes).T
-                    elif (i > 0) and (i < (len(loader)-1)):
+                    # Only aggregate attention if batch size matches the reference batch size
+                    # to avoid None or shape-mismatch in aggregation
+                    same_size = (getattr(batch, 'num_graphs', None) == self.batch_size)
+                    if same_size:
                         out, dict_attention = self.model(batch.x, batch.edge_index, edge_weight=getattr(batch, 'edge_weight', None), mask=getattr(batch, 'mask_y', None), return_attention=True, batch_size=self.batch_size)
                         out = out.squeeze().view(-1, num_nodes).T
-                        for k in range(len(tot_dict_attention['mean'])) :
-                            tot_dict_attention['mean'][k] += dict_attention['mean'][k]
-                            tot_dict_attention['std'][k] += dict_attention['std'][k]
-                        del dict_attention
+
+                        if tot_dict_attention is None:
+                            # Deep copy first valid attention dict
+                            tot_dict_attention = {k: [v_i.clone() if torch.is_tensor(v_i) else v_i for v_i in v] for k, v in dict_attention.items()}
+                            attention_batches = 1
+                        else:
+                            # Safe add: skip items that are None or mismatched
+                            for k in tot_dict_attention.keys():
+                                for j in range(len(tot_dict_attention[k])):
+                                    a = tot_dict_attention[k][j]
+                                    b = dict_attention[k][j]
+                                    if (a is None) or (b is None):
+                                        continue
+                                    if torch.is_tensor(a) and torch.is_tensor(b) and a.shape == b.shape:
+                                        tot_dict_attention[k][j] = a + b
+                            attention_batches += 1
                     else:
+                        # Different batch size: compute outputs without attention to keep loss consistent
                         out = self.model(batch.x, batch.edge_index, edge_weight=getattr(batch, 'edge_weight', None), mask=getattr(batch, 'mask_y', None)).squeeze().view(-1, num_nodes).T
             else:
                 # TODO: add dynamic graph condition
@@ -338,7 +355,6 @@ class Trainer:
             else:
                 print(f"[WARN] Batch {i} ignoré car aucune cible valide")
                 continue
-            # mse_loss = torch.mean((out - y_s) ** 2)
             pred_diff = out[:, None, :] - out[None, :, :]
             norms = torch.norm(pred_diff, p=2, dim=2)
             reg_loss = norms.mean()
@@ -353,16 +369,19 @@ class Trainer:
             total_loss += loss.item() * batch.num_graphs
             count += batch.num_graphs
 
-        if (mode == 'eval')  and (return_attention) and (len(loader) > 2) and (not save) :
-            for k in range(len(tot_dict_attention['mean'])) :
-                tot_dict_attention['mean'][k] /= len(loader)
-                tot_dict_attention['std'][k] /= len(loader)
+        # Finalize attention averaging using only the number of aggregated batches
+        if (mode == 'eval') and (return_attention) and (not save) and (tot_dict_attention is not None) and (attention_batches > 0):
+            for k in tot_dict_attention.keys():
+                for j in range(len(tot_dict_attention[k])):
+                    v = tot_dict_attention[k][j]
+                    if torch.is_tensor(v):
+                        tot_dict_attention[k][j] = v / attention_batches
 
         if (return_attention) and (not save):
             if count > 0:
-                return (total_loss / count, tot_dict_attention) 
+                return (total_loss / count, tot_dict_attention if tot_dict_attention is not None else {})
             else:
-                return (0, tot_dict_attention)
+                return (0, tot_dict_attention if tot_dict_attention is not None else {})
         else:
             if count > 0:
                 return total_loss / count
